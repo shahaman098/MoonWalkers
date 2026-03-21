@@ -1,0 +1,29 @@
+# =============================================================================
+# SwarmOS Billing Budget
+#
+# Apply via: gcloud billing budgets create --billing-account=BILLING_ACCT_ID ...
+# Or import via the GCP Console > Billing > Budgets & alerts.
+#
+# This YAML is a reference config; GCP billing budgets are managed via API/CLI.
+# =============================================================================
+displayName: SwarmOS Hackathon Budget
+budgetFilter:
+  projects:
+    - projects/gdm-hacks2603-lon-2812
+  # Include all services (compute, GKE, Cloud Run, networking, etc.)
+amount:
+  specifiedAmount:
+    currencyCode: USD
+    units: "50"
+thresholdRules:
+  - thresholdPercent: 0.5
+    spendBasis: CURRENT_SPEND
+  - thresholdPercent: 0.8
+    spendBasis: CURRENT_SPEND
+  - thresholdPercent: 1.0
+    spendBasis: CURRENT_SPEND
+# Notifications go to billing admins by default.
+# Add Pub/Sub or Cloud Monitoring channels for custom alerting:
+# notificationsRule:
+#   pubsubTopic: projects/gdm-hacks2603-lon-2812/topics/billing-alerts
+#   schemaVersion: "1.0"

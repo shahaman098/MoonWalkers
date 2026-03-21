@@ -1,0 +1,29 @@
+# =============================================================================
+# SwarmOS Cloud Run API Image (lightweight)
+# Runs the FastAPI orchestration API only — no desktop environment.
+# Agent pods use Dockerfile.agent.
+# =============================================================================
+
+FROM python:3.11-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
+
+COPY app/ /opt/swarm-os/app/
+
+RUN useradd -m -s /bin/bash apiuser
+USER apiuser
+
+WORKDIR /opt/swarm-os
+
+ENV PYTHONPATH=/opt/swarm-os
+
+EXPOSE 8080
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--log-level", "info"]

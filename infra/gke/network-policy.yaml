@@ -1,0 +1,60 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-agent-netpol
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: swarm-agent
+  policyTypes:
+    - Ingress
+    - Egress
+
+  # ---------------------------------------------------------------------------
+  # Ingress: only from Cloud Run (via internal gateway)
+  # ---------------------------------------------------------------------------
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: swarm-system
+        - podSelector:
+            matchLabels:
+              app: swarm-api-gateway
+      ports:
+        - port: 8080
+          protocol: TCP
+        - port: 6080
+          protocol: TCP
+
+  # ---------------------------------------------------------------------------
+  # Egress: allow DNS, HTTPS to package registries, and block everything else
+  # ---------------------------------------------------------------------------
+  egress:
+    # DNS resolution
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+
+    # HTTPS to allowed destinations (package registries, GitHub)
+    - to: []
+      ports:
+        - port: 443
+          protocol: TCP
+        - port: 80
+          protocol: TCP
+      # NOTE: Kubernetes NetworkPolicy cannot filter by domain name.
+      #       For domain-based egress filtering, use Istio/Anthos Service
+      #       Mesh with AuthorizationPolicy, or a transparent proxy.
+      #
+      # Allowed domains (enforced at proxy/mesh level):
+      #   - github.com, *.github.com
+      #   - registry.npmjs.org
+      #   - pypi.org, files.pythonhosted.org
+      #   - registry.hub.docker.com
+      #   - dl.google.com
+      #   - storage.googleapis.com
