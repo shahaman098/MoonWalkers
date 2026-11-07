@@ -2,6 +2,7 @@
 
 Exposes the workspace lifecycle API that the orchestrator calls to
 spawn, exec in, stream, sync files, and destroy agent workspaces.
+Each workspace gets a virtual desktop viewable via noVNC in the browser.
 """
 
 from __future__ import annotations
@@ -9,8 +10,10 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional
 
 from fastapi import (
@@ -23,8 +26,9 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import config
@@ -65,6 +69,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 security = HTTPBearer()
+_FRONTEND_PATH = Path(__file__).parent / "static" / "index.html"
+
+# Serve noVNC static files if available (container has them at /usr/share/novnc)
+_NOVNC_DIR = "/usr/share/novnc"
+if os.path.isdir(_NOVNC_DIR):
+    app.mount("/novnc", StaticFiles(directory=_NOVNC_DIR, html=True), name="novnc")
+    logger.info("Serving noVNC static files from %s", _NOVNC_DIR)
 
 
 def _public_endpoint_urls(request: Request, workspace_id: str) -> dict[str, str]:
@@ -85,9 +96,18 @@ def _public_endpoint_urls(request: Request, workspace_id: str) -> dict[str, str]
     ws_base_url = f"{ws_proto}://{host}"
     return {
         "exec": f"{base_url}/v1/workspaces/{workspace_id}/exec",
-        "stream_webrtc": f"{ws_base_url}/v1/workspaces/{workspace_id}/stream",
+        "view": f"{base_url}/v1/workspaces/{workspace_id}/view",
+        "stream": f"{ws_base_url}/v1/workspaces/{workspace_id}/stream",
+        "stream_webrtc": f"{ws_base_url}/v1/workspaces/{workspace_id}/stream",  # compat alias
         "file_sync": f"{ws_base_url}/v1/workspaces/{workspace_id}/files",
     }
+
+
+@app.get("/", include_in_schema=False)
+async def home():
+    if _FRONTEND_PATH.is_file():
+        return FileResponse(_FRONTEND_PATH)
+    return HTMLResponse("<h1>MoonClaw</h1><p>Frontend not found.</p>", status_code=500)
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +268,167 @@ async def destroy_workspace(
 
 
 # ---------------------------------------------------------------------------
-# WebSocket: Visual stream
+# Demo: one-click spawn + demo + viewer redirect
+# ---------------------------------------------------------------------------
+@app.get("/v1/demo", response_class=HTMLResponse)
+async def demo(
+    request: Request,
+    token: str = Query(...),
+):
+    """One-click demo: spawns a workspace, starts the agent demo, and
+    redirects to the live viewer so you see it all happen."""
+    if token != config.SWARM_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    ws = await manager.spawn_workspace(
+        agent_id="demo-agent",
+        auto_kill_timeout_minutes=10,
+    )
+
+    # Launch the demo script in the background
+    await manager.execute_command(
+        workspace_id=ws.workspace_id,
+        command="bash /opt/swarm-os/scripts/demo_agent.sh &",
+        timeout_seconds=5,
+    )
+
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get(
+        "x-forwarded-host",
+        request.headers.get("host", request.url.netloc),
+    )
+    view_url = f"{proto}://{host}/v1/workspaces/{ws.workspace_id}/view?token={token}"
+
+    # Redirect to the viewer
+    return HTMLResponse(
+        f'<html><head><meta http-equiv="refresh" content="0;url={view_url}"></head>'
+        f'<body>Redirecting to <a href="{view_url}">live viewer</a>...</body></html>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Browser viewer: opens noVNC to watch the agent's screen live
+# ---------------------------------------------------------------------------
+@app.get("/v1/workspaces/{workspace_id}/view", response_class=HTMLResponse)
+async def view_workspace(
+    workspace_id: str,
+    token: str = Query(...),
+    request: Request = None,
+):
+    """Render an in-browser noVNC viewer for the workspace's virtual desktop.
+
+    Uses the noVNC static files served from the container's /usr/share/novnc/
+    via ES module import. Falls back to a terminal activity stream if noVNC
+    can't connect.
+    """
+    if token != config.SWARM_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    ws = manager.get_workspace(workspace_id)
+    if ws is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get(
+        "x-forwarded-host",
+        request.headers.get("host", request.url.netloc),
+    )
+    ws_proto = "wss" if proto == "https" else "ws"
+    stream_url = f"{ws_proto}://{host}/v1/workspaces/{workspace_id}/stream?token={token}"
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>SwarmOS — {workspace_id}</title>
+<style>
+  * {{ margin:0; padding:0; }}
+  body {{ background:#0d1117; overflow:hidden; }}
+  #top-bar {{ background:#161b22; color:#c9d1d9; padding:6px 16px; font:13px/1.4 monospace;
+              display:flex; align-items:center; gap:16px; border-bottom:1px solid #30363d; }}
+  .dot {{ width:8px; height:8px; border-radius:50%; background:#3fb950; }}
+  .dot.off {{ background:#f85149; }}
+  .dot.connecting {{ background:#d29922; }}
+  #screen {{ width:100vw; height:calc(100vh - 34px); }}
+  #activity {{ position:fixed; bottom:0; left:0; right:0; max-height:40vh; overflow-y:auto;
+               background:rgba(13,17,23,0.95); border-top:1px solid #30363d; padding:8px 12px;
+               font:12px/1.5 monospace; color:#8b949e; z-index:10; }}
+  .act-line {{ white-space:pre-wrap; word-break:break-all; }}
+  .act-cmd {{ color:#d2a8ff; font-weight:bold; }}
+  .act-out {{ color:#c9d1d9; }}
+  .act-err {{ color:#f85149; }}
+  .act-sys {{ color:#484f58; }}
+</style>
+</head><body>
+<div id="top-bar">
+  <span id="dot" class="dot connecting"></span>
+  <span>{workspace_id}</span>
+  <span id="status">Connecting...</span>
+  <button onclick="toggleLog()" style="margin-left:auto;background:#21262d;color:#c9d1d9;border:1px solid #30363d;
+    padding:2px 10px;border-radius:4px;cursor:pointer;font:12px monospace;">Toggle Log</button>
+</div>
+<div id="screen"></div>
+<div id="activity" style="display:none;"></div>
+
+<script type="module">
+// Load noVNC RFB from the container's static files
+import RFB from '/novnc/core/rfb.js';
+
+const streamUrl = "{stream_url}";
+const screenEl = document.getElementById('screen');
+const dotEl = document.getElementById('dot');
+const statusEl = document.getElementById('status');
+const actEl = document.getElementById('activity');
+let rfb = null;
+
+function setStatus(state, text) {{
+  statusEl.textContent = text;
+  dotEl.className = 'dot' + (state === 'live' ? '' : state === 'error' ? ' off' : ' connecting');
+}}
+
+function addLog(text, cls) {{
+  const d = document.createElement('div');
+  d.className = 'act-line ' + (cls || 'act-sys');
+  d.textContent = text;
+  actEl.appendChild(d);
+  if (actEl.children.length > 500) actEl.removeChild(actEl.firstChild);
+  actEl.scrollTop = actEl.scrollHeight;
+}}
+
+window.toggleLog = function() {{ actEl.style.display = actEl.style.display === 'none' ? 'block' : 'none'; }};
+
+function connectVNC() {{
+  setStatus('connecting', 'Connecting to desktop...');
+  addLog('[vnc] Connecting to ' + streamUrl);
+  try {{
+    rfb = new RFB(screenEl, streamUrl, {{
+      wsProtocols: ['binary'],
+    }});
+    rfb.scaleViewport = true;
+    rfb.resizeSession = false;
+    rfb.addEventListener('connect', () => {{
+      setStatus('live', 'Live');
+      addLog('[vnc] Connected — screen is live');
+    }});
+    rfb.addEventListener('disconnect', (e) => {{
+      const reason = e.detail.clean ? 'clean close' : 'connection lost';
+      setStatus('error', 'Disconnected — ' + reason);
+      addLog('[vnc] Disconnected: ' + reason);
+      setTimeout(connectVNC, 3000);
+    }});
+  }} catch(err) {{
+    setStatus('error', 'noVNC error — see log');
+    addLog('[vnc] Error: ' + err.message, 'act-err');
+    setTimeout(connectVNC, 5000);
+  }}
+}}
+
+connectVNC();
+</script>
+</body></html>""")
+
+
+# ---------------------------------------------------------------------------
+# WebSocket: VNC screen stream (proxies to local websockify)
 # ---------------------------------------------------------------------------
 @app.websocket("/v1/workspaces/{workspace_id}/stream")
 async def stream_workspace(
@@ -256,14 +436,10 @@ async def stream_workspace(
     workspace_id: str,
     token: str = Query(...),
 ):
-    """Visual stream via WebSocket.
+    """Live screen stream via WebSocket.
 
-    In GKE mode: waits for the pod's noVNC LoadBalancer IP to be assigned,
-    then sends a 'redirect' message so the frontend can connect directly to
-    ws://POD_IP:6080 (noVNC/websockify). This avoids routing 30fps video
-    through Cloud Run and gives the lowest possible latency.
-
-    In local mode: sends heartbeat status frames (for development).
+    Bidirectional proxy between the browser's noVNC client and the
+    workspace's local websockify. Carries binary RFB/VNC frames.
     """
     if token != config.SWARM_API_KEY:
         await websocket.close(code=4001, reason="Unauthorized")
@@ -274,12 +450,10 @@ async def stream_workspace(
         await websocket.close(code=4004, reason="Workspace not found")
         return
 
-    await websocket.accept()
-
-    # GKE mode: wait for the pod's external IP then redirect the client
+    # GKE mode: redirect to pod's direct noVNC URL
     if config.GKE_MODE:
+        await websocket.accept()
         try:
-            # Poll until stream_url is resolved (LoadBalancer IP assigned)
             deadline = time.time() + 180
             while not getattr(ws, "stream_url", "") and time.time() < deadline:
                 await websocket.send_json({
@@ -296,7 +470,6 @@ async def stream_workspace(
                     "type": "redirect",
                     "workspace_id": workspace_id,
                     "stream_url": stream_url,
-                    "message": "Connect your UI directly to stream_url for live video",
                     "timestamp": time.time(),
                 })
             else:
@@ -307,26 +480,112 @@ async def stream_workspace(
                 })
         except WebSocketDisconnect:
             pass
-        except Exception:
-            logger.exception("GKE stream error for %s", workspace_id)
         return
 
-    # Local mode: heartbeat loop
+    # Local mode: if the client explicitly requests the noVNC binary
+    # subprotocol, proxy raw VNC traffic. Otherwise fall back to the JSON
+    # activity stream so generic websocket clients still work.
+    requested_protocols = websocket.scope.get("subprotocols", [])
+    wants_vnc = "binary" in requested_protocols
+
+    if ws.vnc_ws_port and wants_vnc:
+        import websockets
+
+        # Accept with the binary subprotocol that noVNC requests
+        await websocket.accept(subprotocol="binary")
+
+        upstream_url = f"ws://localhost:{ws.vnc_ws_port}"
+        try:
+            async with websockets.connect(
+                upstream_url,
+                subprotocols=["binary"],
+                max_size=2**22,
+                open_timeout=10,
+            ) as upstream:
+                logger.info(
+                    "VNC proxy connected for %s → localhost:%d",
+                    workspace_id, ws.vnc_ws_port,
+                )
+
+                async def _client_to_vnc():
+                    """Forward frames from browser → websockify."""
+                    try:
+                        while True:
+                            msg = await websocket.receive()
+                            if msg.get("bytes"):
+                                await upstream.send(msg["bytes"])
+                            elif msg.get("text"):
+                                await upstream.send(msg["text"])
+                            elif msg.get("type") == "websocket.disconnect":
+                                break
+                    except (WebSocketDisconnect, Exception):
+                        pass
+
+                async def _vnc_to_client():
+                    """Forward frames from websockify → browser."""
+                    try:
+                        async for frame in upstream:
+                            if isinstance(frame, bytes):
+                                await websocket.send_bytes(frame)
+                            else:
+                                await websocket.send_text(frame)
+                    except (WebSocketDisconnect, Exception):
+                        pass
+
+                done, pending = await asyncio.wait(
+                    [
+                        asyncio.create_task(_client_to_vnc()),
+                        asyncio.create_task(_vnc_to_client()),
+                    ],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+
+            logger.info("VNC proxy closed for %s", workspace_id)
+            return
+        except Exception as exc:
+            logger.warning(
+                "VNC proxy failed for %s: %s — falling back to activity stream",
+                workspace_id, exc,
+            )
+            # Fall through to activity stream
+
+    # Fallback: terminal activity stream (no desktop available)
+    # Accept without subprotocol for JSON activity events
+    try:
+        await websocket.accept()
+    except RuntimeError:
+        pass  # already accepted above in error path
+
+    q = manager.subscribe(workspace_id)
     try:
         while True:
-            uptime = round(time.time() - ws.created_at, 1)
-            await websocket.send_json({
-                "type": "heartbeat",
-                "workspace_id": workspace_id,
-                "status": ws.status,
-                "uptime_seconds": uptime,
-                "timestamp": time.time(),
-            })
-            await asyncio.sleep(config.STREAM_HEARTBEAT)
+            sent_any = False
+            while not q.empty():
+                try:
+                    event = q.get_nowait()
+                    event["workspace_id"] = workspace_id
+                    await websocket.send_json(event)
+                    sent_any = True
+                except asyncio.QueueEmpty:
+                    break
+            if not sent_any:
+                uptime = round(time.time() - ws.created_at, 1)
+                await websocket.send_json({
+                    "type": "heartbeat",
+                    "workspace_id": workspace_id,
+                    "status": ws.status,
+                    "uptime_seconds": uptime,
+                    "timestamp": time.time(),
+                })
+            await asyncio.sleep(0.1)
     except WebSocketDisconnect:
         logger.info("Stream client disconnected from %s", workspace_id)
     except Exception:
         logger.exception("Stream error for %s", workspace_id)
+    finally:
+        manager.unsubscribe(workspace_id, q)
 
 
 # ---------------------------------------------------------------------------

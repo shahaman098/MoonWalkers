@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SwarmOS Live Activity Stream</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0d1117; color: #c9d1d9; font-family: 'SF Mono', 'Fira Code', monospace; padding: 20px; }
+  h1 { color: #58a6ff; margin-bottom: 10px; font-size: 18px; }
+  .status { padding: 8px 12px; border-radius: 6px; margin-bottom: 16px; font-size: 13px; }
+  .status.disconnected { background: #3d1f1f; color: #f85149; }
+  .status.connected { background: #1f3d1f; color: #3fb950; }
+  .status.connecting { background: #3d3d1f; color: #d29922; }
+  #controls { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  button { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; padding: 8px 16px;
+           border-radius: 6px; cursor: pointer; font-family: inherit; font-size: 13px; }
+  button:hover { background: #30363d; }
+  button.primary { background: #238636; border-color: #238636; color: #fff; }
+  button.danger { background: #da3633; border-color: #da3633; color: #fff; }
+  #terminal { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+              padding: 16px; height: calc(100vh - 220px); overflow-y: auto; font-size: 13px; line-height: 1.6; }
+  .line { white-space: pre-wrap; word-break: break-all; }
+  .line.stdout { color: #c9d1d9; }
+  .line.stderr { color: #f85149; }
+  .line.system { color: #8b949e; font-style: italic; }
+  .line.cmd { color: #d2a8ff; font-weight: bold; }
+  .line.exit-ok { color: #3fb950; }
+  .line.exit-fail { color: #f85149; }
+  .line.heartbeat { color: #30363d; }
+  .timestamp { color: #484f58; margin-right: 8px; }
+  #config { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  #config input { background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
+                  padding: 8px 12px; border-radius: 6px; font-family: inherit; font-size: 13px; flex: 1; min-width: 200px; }
+</style>
+</head>
+<body>
+
+<h1>SwarmOS Live Activity Stream</h1>
+
+<div id="config">
+  <input id="apiUrl" placeholder="API URL (https://...)" value="https://swarm-os-api-melkemheaq-nw.a.run.app" />
+  <input id="apiKey" placeholder="API Key" value="-M-w1cV0sj-1sElJ5G-heJljwbw44olqaPgsYVDiWjE" />
+</div>
+
+<div id="controls">
+  <button class="primary" onclick="spawnAndWatch()">Spawn + Watch</button>
+  <button onclick="runCommand()">Run Command</button>
+  <button class="danger" onclick="destroyWorkspace()">Destroy</button>
+  <span id="wsId" style="line-height:36px; color:#8b949e; font-size:13px;"></span>
+</div>
+
+<div id="statusBar" class="status disconnected">Disconnected</div>
+
+<div id="terminal"></div>
+
+<script>
+let ws = null;
+let currentWsId = null;
+
+function getApiUrl() { return document.getElementById('apiUrl').value.replace(/\/$/, ''); }
+function getApiKey() { return document.getElementById('apiKey').value; }
+function ts() { return new Date().toLocaleTimeString('en-GB', { hour12: false }); }
+
+function setStatus(cls, text) {
+  const el = document.getElementById('statusBar');
+  el.className = 'status ' + cls;
+  el.textContent = text;
+}
+
+function log(text, cls = 'system') {
+  const term = document.getElementById('terminal');
+  const div = document.createElement('div');
+  div.className = 'line ' + cls;
+  div.innerHTML = `<span class="timestamp">${ts()}</span>${escapeHtml(text)}`;
+  term.appendChild(div);
+  term.scrollTop = term.scrollHeight;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+async function spawnAndWatch() {
+  const url = getApiUrl();
+  const key = getApiKey();
+
+  log('Spawning workspace...');
+  try {
+    const resp = await fetch(`${url}/v1/workspaces/spawn`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_id: 'stream-viewer', auto_kill_timeout_minutes: 10 })
+    });
+    const data = await resp.json();
+    currentWsId = data.workspace_id;
+    document.getElementById('wsId').textContent = currentWsId;
+    log(`Workspace spawned: ${currentWsId} (status: ${data.status})`);
+
+    // Connect WebSocket
+    connectStream(data.endpoints.stream || data.endpoints.stream_webrtc);
+  } catch (e) {
+    log(`Spawn failed: ${e.message}`, 'stderr');
+  }
+}
+
+function connectStream(streamUrl) {
+  // Add token to URL
+  const key = getApiKey();
+  const wsUrl = streamUrl.includes('?') ? `${streamUrl}&token=${key}` : `${streamUrl}?token=${key}`;
+
+  setStatus('connecting', `Connecting to ${wsUrl}...`);
+  log(`Connecting to stream...`);
+
+  ws = new WebSocket(wsUrl);
+
+  ws.onopen = () => {
+    setStatus('connected', `Connected - watching ${currentWsId}`);
+    log('Stream connected. Waiting for agent activity...');
+  };
+
+  ws.onmessage = (evt) => {
+    const msg = JSON.parse(evt.data);
+
+    switch (msg.type) {
+      case 'heartbeat':
+        // Only show every 10th heartbeat to reduce noise
+        if (Math.random() < 0.1) {
+          log(`[heartbeat] status=${msg.status} uptime=${msg.uptime_seconds}s`, 'heartbeat');
+        }
+        break;
+
+      case 'command_start':
+        log(`$ ${msg.command}`, 'cmd');
+        if (msg.working_directory && msg.working_directory !== '/home/agent/workspace') {
+          log(`  (in ${msg.working_directory})`, 'system');
+        }
+        break;
+
+      case 'command_output':
+        log(msg.line, msg.channel === 'stderr' ? 'stderr' : 'stdout');
+        break;
+
+      case 'command_end':
+        const cls = msg.exit_code === 0 ? 'exit-ok' : 'exit-fail';
+        let suffix = msg.timed_out ? ' (TIMED OUT)' : '';
+        log(`exit ${msg.exit_code} (${msg.execution_time_ms}ms)${suffix}`, cls);
+        log('', 'system'); // blank line between commands
+        break;
+
+      case 'command_blocked':
+        log(`BLOCKED: ${msg.command}`, 'stderr');
+        break;
+
+      default:
+        log(`[${msg.type}] ${JSON.stringify(msg)}`, 'system');
+    }
+  };
+
+  ws.onclose = (evt) => {
+    setStatus('disconnected', `Disconnected (code ${evt.code})`);
+    log(`Stream disconnected: ${evt.reason || 'closed'}`);
+  };
+
+  ws.onerror = () => {
+    setStatus('disconnected', 'Connection error');
+    log('WebSocket error', 'stderr');
+  };
+}
+
+async function runCommand() {
+  if (!currentWsId) { log('No workspace - spawn one first', 'stderr'); return; }
+
+  const cmd = prompt('Command to run:', 'echo "hello from the agent" && ls -la && date');
+  if (!cmd) return;
+
+  const url = getApiUrl();
+  const key = getApiKey();
+
+  try {
+    const resp = await fetch(`${url}/v1/workspaces/${currentWsId}/exec`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: cmd })
+    });
+    // Response comes back, but the STREAM already showed the live output
+    const data = await resp.json();
+    log(`[exec response] exit_code=${data.exit_code}`, 'system');
+  } catch (e) {
+    log(`Exec failed: ${e.message}`, 'stderr');
+  }
+}
+
+async function destroyWorkspace() {
+  if (!currentWsId) return;
+  const url = getApiUrl();
+  const key = getApiKey();
+
+  try {
+    const resp = await fetch(`${url}/v1/workspaces/${currentWsId}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${key}` }
+    });
+    const data = await resp.json();
+    log(`Workspace destroyed. Uptime: ${data.uptime_minutes}min, Cost: $${data.cost_incurred_usd}`);
+    currentWsId = null;
+    document.getElementById('wsId').textContent = '';
+  } catch (e) {
+    log(`Destroy failed: ${e.message}`, 'stderr');
+  }
+}
+</script>
+</body>
+</html>

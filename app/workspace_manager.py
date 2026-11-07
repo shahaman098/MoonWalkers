@@ -1,7 +1,9 @@
 """Workspace lifecycle management.
 
 Handles spawning, executing commands in, and destroying workspaces.
-Works locally via subprocess for dev/test; clear hooks for GKE pod creation.
+Each workspace gets its own virtual desktop (Xvfb + fluxbox + x11vnc +
+websockify) so agents can run GUI apps and viewers can watch live via
+noVNC over the API WebSocket.
 """
 
 from __future__ import annotations
@@ -12,6 +14,8 @@ import logging
 import os
 import random
 import shutil
+import signal
+import subprocess
 import time
 import zipfile
 from dataclasses import dataclass, field
@@ -21,6 +25,17 @@ from typing import Optional
 from app import config
 
 logger = logging.getLogger("swarm.workspace")
+
+# Display numbers start at 10 to avoid collision with any host display.
+_next_display = 10
+_display_lock = Lock()
+
+def _alloc_display() -> int:
+    global _next_display
+    with _display_lock:
+        d = _next_display
+        _next_display += 1
+        return d
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +51,12 @@ class Workspace:
     directory: str
     created_at: float = field(default_factory=time.time)
     status: str = "booting"
+    display_num: int = 0
+    vnc_port: int = 0
+    vnc_ws_port: int = 0
     _kill_task: Optional[asyncio.Task] = field(default=None, repr=False)
+    _activity_subscribers: list[asyncio.Queue] = field(default_factory=list, repr=False)
+    _desktop_procs: list = field(default_factory=list, repr=False)
 
 
 @dataclass
@@ -128,7 +148,125 @@ class WorkspaceManager:
         except asyncio.CancelledError:
             logger.info("Auto-kill cancelled for workspace %s", workspace_id)
 
+    # -- activity stream ---------------------------------------------------
+
+    def subscribe(self, workspace_id: str) -> asyncio.Queue:
+        """Return a new queue that receives real-time activity events."""
+        ws = self.get_workspace(workspace_id)
+        if ws is None:
+            raise KeyError(f"Workspace {workspace_id} not found")
+        q: asyncio.Queue = asyncio.Queue(maxsize=256)
+        ws._activity_subscribers.append(q)
+        return q
+
+    def unsubscribe(self, workspace_id: str, q: asyncio.Queue) -> None:
+        ws = self.get_workspace(workspace_id)
+        if ws is not None:
+            try:
+                ws._activity_subscribers.remove(q)
+            except ValueError:
+                pass
+
+    def _broadcast(self, workspace_id: str, event: dict) -> None:
+        """Push an event to all subscribers. Drop if queue is full."""
+        ws = self.get_workspace(workspace_id)
+        if ws is None:
+            return
+        dead: list[asyncio.Queue] = []
+        for q in ws._activity_subscribers:
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                dead.append(q)
+        for q in dead:
+            try:
+                ws._activity_subscribers.remove(q)
+            except ValueError:
+                pass
+
     # -- public API --------------------------------------------------------
+
+    def _start_desktop(self, ws: Workspace) -> None:
+        """Start a virtual desktop stack for the workspace.
+
+        Launches Xvfb, fluxbox, x11vnc, and websockify. If any binary is
+        missing (e.g. running tests on macOS), the workspace still works
+        but without a screen.
+        """
+        display_num = _alloc_display()
+        vnc_port = 5900 + display_num
+        vnc_ws_port = 6080 + display_num
+        ws.display_num = display_num
+        ws.vnc_port = vnc_port
+        ws.vnc_ws_port = vnc_ws_port
+
+        display = f":{display_num}"
+        devnull = subprocess.DEVNULL
+
+        try:
+            # 1. Xvfb — virtual framebuffer
+            xvfb = subprocess.Popen(
+                ["Xvfb", display, "-screen", "0", "1280x720x24",
+                 "-ac", "+extension", "GLX", "+render", "-noreset"],
+                stdout=devnull, stderr=devnull,
+            )
+            ws._desktop_procs.append(xvfb)
+            time.sleep(0.5)  # let Xvfb initialise
+
+            env = {**os.environ, "DISPLAY": display}
+
+            # 2. fluxbox — lightweight window manager
+            fluxbox = subprocess.Popen(
+                ["fluxbox"],
+                stdout=devnull, stderr=devnull, env=env,
+            )
+            ws._desktop_procs.append(fluxbox)
+
+            # 3. x11vnc — captures the display
+            x11vnc = subprocess.Popen(
+                ["x11vnc", "-display", display, "-forever", "-nopw",
+                 "-shared", "-rfbport", str(vnc_port), "-quiet"],
+                stdout=devnull, stderr=devnull,
+            )
+            ws._desktop_procs.append(x11vnc)
+            time.sleep(0.3)  # let VNC bind
+
+            # 4. websockify — WebSocket proxy to VNC
+            websockify = subprocess.Popen(
+                ["websockify", "--web", "/usr/share/novnc",
+                 str(vnc_ws_port), f"localhost:{vnc_port}"],
+                stdout=devnull, stderr=devnull,
+            )
+            ws._desktop_procs.append(websockify)
+
+            logger.info(
+                "Desktop started for %s — display=%s vnc=:%d ws=:%d",
+                ws.workspace_id, display, vnc_port, vnc_ws_port,
+            )
+        except FileNotFoundError as exc:
+            logger.warning(
+                "Desktop binaries not available (%s) — workspace %s "
+                "will run without a screen",
+                exc.filename, ws.workspace_id,
+            )
+
+    def _stop_desktop(self, ws: Workspace) -> None:
+        """Kill all desktop processes for a workspace."""
+        for proc in reversed(ws._desktop_procs):
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+        # Give them a moment then force-kill
+        for proc in reversed(ws._desktop_procs):
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+        ws._desktop_procs.clear()
 
     async def spawn_workspace(
         self,
@@ -137,11 +275,7 @@ class WorkspaceManager:
         tools_preloaded: list[str] | None = None,
         auto_kill_timeout_minutes: int | None = None,
     ) -> Workspace:
-        """Create a new workspace directory and start the auto-kill timer.
-
-        # TODO(cloud-lead): Replace directory creation with GKE pod spawn:
-        #   kubectl apply -f rendered_pod_manifest(workspace_id, ...)
-        """
+        """Create a new workspace with a virtual desktop and start the auto-kill timer."""
         if tools_preloaded is None:
             tools_preloaded = []
         if auto_kill_timeout_minutes is None:
@@ -160,6 +294,9 @@ class WorkspaceManager:
             directory=ws_dir,
         )
 
+        # Start virtual desktop (Xvfb + fluxbox + x11vnc + websockify)
+        self._start_desktop(ws)
+
         # Start auto-kill timer (critical safety net)
         loop = asyncio.get_running_loop()
         ws._kill_task = loop.create_task(
@@ -171,9 +308,10 @@ class WorkspaceManager:
 
         ws.status = "running"
         logger.info(
-            "Spawned workspace %s for agent %s (auto-kill in %d min)",
+            "Spawned workspace %s for agent %s (display=:%d, auto-kill in %d min)",
             ws_id,
             agent_id,
+            ws.display_num,
             auto_kill_timeout_minutes,
         )
         return ws
@@ -188,14 +326,19 @@ class WorkspaceManager:
     ) -> ExecResult:
         """Run a command inside a workspace via subprocess.
 
-        # TODO(cloud-lead): Replace subprocess with `kubectl exec` against
-        #   the workspace pod once GKE integration is wired.
+        Broadcasts real-time activity events to any connected stream
+        subscribers so viewers can watch agent terminal output live.
         """
         ws = self.get_workspace(workspace_id)
         if ws is None:
             raise KeyError(f"Workspace {workspace_id} not found")
 
         if self._is_blocked(command):
+            self._broadcast(workspace_id, {
+                "type": "command_blocked",
+                "command": command,
+                "timestamp": time.time(),
+            })
             return ExecResult(
                 exit_code=126,
                 stdout="",
@@ -228,26 +371,78 @@ class WorkspaceManager:
         if args:
             full_cmd = f"{command} {' '.join(args)}"
 
+        # Broadcast: command starting
+        self._broadcast(workspace_id, {
+            "type": "command_start",
+            "command": full_cmd,
+            "working_directory": working_directory,
+            "timestamp": time.time(),
+        })
+
         start = time.monotonic()
         try:
+            # Set DISPLAY so GUI apps render on this workspace's virtual screen
+            env = {**os.environ, "DISPLAY": f":{ws.display_num}"}
             proc = await asyncio.create_subprocess_shell(
                 full_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
+                env=env,
             )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout_seconds
+
+            # Stream stdout/stderr line-by-line in real time
+            stdout_lines: list[str] = []
+            stderr_lines: list[str] = []
+
+            async def _read_stream(
+                stream: asyncio.StreamReader, dest: list[str], channel: str
+            ) -> None:
+                async for raw_line in stream:
+                    line = raw_line.decode(errors="replace")
+                    dest.append(line)
+                    self._broadcast(workspace_id, {
+                        "type": "command_output",
+                        "channel": channel,
+                        "line": line.rstrip("\n"),
+                        "timestamp": time.time(),
+                    })
+
+            await asyncio.wait_for(
+                asyncio.gather(
+                    _read_stream(proc.stdout, stdout_lines, "stdout"),
+                    _read_stream(proc.stderr, stderr_lines, "stderr"),
+                    proc.wait(),
+                ),
+                timeout=timeout_seconds,
             )
+
             elapsed_ms = int((time.monotonic() - start) * 1000)
+            stdout_text = "".join(stdout_lines)
+            stderr_text = "".join(stderr_lines)
+
+            self._broadcast(workspace_id, {
+                "type": "command_end",
+                "exit_code": proc.returncode or 0,
+                "execution_time_ms": elapsed_ms,
+                "timestamp": time.time(),
+            })
+
             return ExecResult(
                 exit_code=proc.returncode or 0,
-                stdout=stdout_bytes.decode(errors="replace"),
-                stderr=stderr_bytes.decode(errors="replace"),
+                stdout=stdout_text,
+                stderr=stderr_text,
                 execution_time_ms=elapsed_ms,
             )
         except asyncio.TimeoutError:
             elapsed_ms = int((time.monotonic() - start) * 1000)
+            self._broadcast(workspace_id, {
+                "type": "command_end",
+                "exit_code": 124,
+                "execution_time_ms": elapsed_ms,
+                "timed_out": True,
+                "timestamp": time.time(),
+            })
             return ExecResult(
                 exit_code=124,
                 stdout="",
@@ -256,6 +451,13 @@ class WorkspaceManager:
             )
         except Exception as exc:
             elapsed_ms = int((time.monotonic() - start) * 1000)
+            self._broadcast(workspace_id, {
+                "type": "command_end",
+                "exit_code": 1,
+                "execution_time_ms": elapsed_ms,
+                "error": str(exc),
+                "timestamp": time.time(),
+            })
             return ExecResult(
                 exit_code=1,
                 stdout="",
@@ -264,11 +466,7 @@ class WorkspaceManager:
             )
 
     async def destroy_workspace(self, workspace_id: str) -> dict:
-        """Tear down a workspace and return cost summary.
-
-        # TODO(cloud-lead): Also delete the GKE pod:
-        #   kubectl delete pod {workspace_id} --grace-period=10
-        """
+        """Tear down a workspace, kill desktop processes, and return cost summary."""
         with self._lock:
             ws = self._workspaces.pop(workspace_id, None)
 
@@ -278,6 +476,9 @@ class WorkspaceManager:
         # Cancel auto-kill timer
         if ws._kill_task and not ws._kill_task.done():
             ws._kill_task.cancel()
+
+        # Stop virtual desktop
+        self._stop_desktop(ws)
 
         uptime_seconds = time.time() - ws.created_at
         uptime_minutes = round(uptime_seconds / 60, 2)

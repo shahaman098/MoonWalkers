@@ -11,6 +11,16 @@ from app.config import SWARM_API_KEY
 
 
 # ---------------------------------------------------------------------------
+# Frontend
+# ---------------------------------------------------------------------------
+
+def test_root_frontend_available(client: TestClient):
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "MoonClaw" in resp.text
+
+
+# ---------------------------------------------------------------------------
 # Spawn
 # ---------------------------------------------------------------------------
 
@@ -53,11 +63,15 @@ def test_spawn_returns_correct_shape(client: TestClient, auth_headers: dict):
 
     endpoints = data["endpoints"]
     assert "exec" in endpoints
-    assert "stream_webrtc" in endpoints
+    assert "view" in endpoints
+    assert "stream" in endpoints
+    assert "stream_webrtc" in endpoints  # compat alias
     assert "file_sync" in endpoints
 
     ws_id = data["workspace_id"]
     assert endpoints["exec"] == f"http://testserver/v1/workspaces/{ws_id}/exec"
+    assert endpoints["view"] == f"http://testserver/v1/workspaces/{ws_id}/view"
+    assert endpoints["stream"] == f"ws://testserver/v1/workspaces/{ws_id}/stream"
     assert endpoints["stream_webrtc"] == f"ws://testserver/v1/workspaces/{ws_id}/stream"
     assert endpoints["file_sync"] == f"ws://testserver/v1/workspaces/{ws_id}/files"
 
@@ -204,6 +218,56 @@ def test_stream_websocket_connect(
         assert msg["type"] == "heartbeat"
         assert msg["workspace_id"] == ws_id
         assert "uptime_seconds" in msg
+
+
+def test_stream_shows_live_activity(
+    client: TestClient, auth_headers: dict, workspace: dict
+):
+    """Activity stream broadcasts command_start / command_output / command_end."""
+    import threading
+
+    ws_id = workspace["workspace_id"]
+    messages: list[dict] = []
+
+    def _ws_listener():
+        with client.websocket_connect(
+            f"/v1/workspaces/{ws_id}/stream?token={SWARM_API_KEY}"
+        ) as ws:
+            # Collect a few messages (heartbeat + activity events)
+            for _ in range(10):
+                try:
+                    msg = ws.receive_json()
+                    messages.append(msg)
+                    if msg.get("type") == "command_end":
+                        break
+                except Exception:
+                    break
+
+    # Start WebSocket listener in a thread
+    t = threading.Thread(target=_ws_listener, daemon=True)
+    t.start()
+
+    # Give the WS a moment to connect
+    import time
+    time.sleep(0.3)
+
+    # Execute a command — this should produce activity events
+    client.post(
+        f"/v1/workspaces/{ws_id}/exec",
+        json={"command": "echo", "args": ["streaming works"]},
+        headers=auth_headers,
+    )
+
+    t.join(timeout=5)
+
+    types_seen = {m["type"] for m in messages}
+    assert "command_start" in types_seen, f"Expected command_start, got: {types_seen}"
+    assert "command_output" in types_seen, f"Expected command_output, got: {types_seen}"
+    assert "command_end" in types_seen, f"Expected command_end, got: {types_seen}"
+
+    # Verify the output line contains our message
+    output_msgs = [m for m in messages if m["type"] == "command_output"]
+    assert any("streaming works" in m.get("line", "") for m in output_msgs)
 
 
 def test_file_sync_websocket_connect(

@@ -1,7 +1,8 @@
 # =============================================================================
-# SwarmOS Cloud Run API Image (lightweight)
-# Runs the FastAPI orchestration API only — no desktop environment.
-# Agent pods use Dockerfile.agent.
+# SwarmOS Cloud Run API Image
+# Runs the FastAPI orchestration API with per-workspace virtual desktops.
+# Each workspace gets its own Xvfb display, VNC capture, and noVNC stream
+# proxied through the API WebSocket — no external ports needed.
 # =============================================================================
 
 FROM python:3.11-slim
@@ -10,14 +11,31 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    xvfb \
+    x11vnc \
+    fluxbox \
+    novnc \
+    websockify \
+    xterm \
+    xdotool \
+    xfonts-base \
+    procps \
+    chromium \
+    fonts-liberation \
+    fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
 
 COPY app/ /opt/swarm-os/app/
+COPY scripts/ /opt/swarm-os/scripts/
+RUN chmod +x /opt/swarm-os/scripts/*.sh
 
-RUN useradd -m -s /bin/bash apiuser
+RUN useradd -m -s /bin/bash apiuser \
+    && mkdir -p /tmp/swarm-os-gcp/workspaces \
+    && chown -R apiuser:apiuser /tmp/swarm-os-gcp
+
 USER apiuser
 
 WORKDIR /opt/swarm-os

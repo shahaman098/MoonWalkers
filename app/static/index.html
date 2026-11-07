@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MoonClaw</title>
+  <style>
+    :root {
+      --bg: #f4efe7;
+      --panel: rgba(255, 252, 247, 0.86);
+      --ink: #1f1b18;
+      --muted: #6c625a;
+      --line: rgba(31, 27, 24, 0.1);
+      --accent: #be4a2f;
+      --accent-dark: #8c2f1c;
+      --success: #2f7d4b;
+      --shadow: 0 20px 50px rgba(73, 50, 26, 0.12);
+      --mono: "SFMono-Regular", "Menlo", "Monaco", "Courier New", monospace;
+      --serif: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: var(--serif);
+      background:
+        radial-gradient(circle at top left, rgba(190, 74, 47, 0.16), transparent 34%),
+        radial-gradient(circle at top right, rgba(47, 125, 75, 0.10), transparent 22%),
+        linear-gradient(180deg, #f7f2ea 0%, #efe5d6 100%);
+      min-height: 100vh;
+    }
+
+    .shell {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 28px 20px 48px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.25fr 0.85fr;
+      gap: 18px;
+      margin-bottom: 18px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+      border-radius: 24px;
+    }
+
+    .hero-copy {
+      padding: 28px 28px 24px;
+    }
+
+    .eyebrow {
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      font: 600 12px/1.2 var(--mono);
+      color: var(--accent);
+      margin-bottom: 16px;
+    }
+
+    h1 {
+      margin: 0 0 14px;
+      font-size: clamp(42px, 8vw, 72px);
+      line-height: 0.94;
+      letter-spacing: -0.04em;
+    }
+
+    .hero-copy p {
+      margin: 0;
+      max-width: 60ch;
+      font-size: 18px;
+      line-height: 1.55;
+      color: var(--muted);
+    }
+
+    .hero-side {
+      padding: 24px;
+      display: grid;
+      gap: 14px;
+      align-content: start;
+    }
+
+    .metric {
+      padding: 18px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.6);
+    }
+
+    .metric-label {
+      font: 600 11px/1.2 var(--mono);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .metric-value {
+      font-size: 16px;
+      line-height: 1.45;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 0.95fr 1.05fr;
+      gap: 18px;
+    }
+
+    .stack {
+      display: grid;
+      gap: 18px;
+      min-width: 0;
+    }
+
+    .section {
+      padding: 22px;
+    }
+
+    .section h2 {
+      margin: 0 0 6px;
+      font-size: 26px;
+      letter-spacing: -0.03em;
+    }
+
+    .section p.note {
+      margin: 0 0 18px;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    .fields {
+      display: grid;
+      gap: 12px;
+    }
+
+    label {
+      display: grid;
+      gap: 7px;
+      font: 600 12px/1.2 var(--mono);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+    }
+
+    input,
+    textarea {
+      width: 100%;
+      border: 1px solid rgba(31, 27, 24, 0.16);
+      border-radius: 14px;
+      padding: 13px 14px;
+      font: 500 15px/1.45 var(--mono);
+      background: rgba(255, 255, 255, 0.82);
+      color: var(--ink);
+      outline: none;
+      transition: border-color 160ms ease, transform 160ms ease;
+    }
+
+    input:focus,
+    textarea:focus {
+      border-color: rgba(190, 74, 47, 0.5);
+      transform: translateY(-1px);
+    }
+
+    textarea {
+      min-height: 140px;
+      resize: vertical;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    button,
+    .button-link {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      cursor: pointer;
+      text-decoration: none;
+      transition: transform 160ms ease, opacity 160ms ease, background 160ms ease;
+      font: 700 14px/1 var(--mono);
+    }
+
+    button:hover,
+    .button-link:hover {
+      transform: translateY(-1px);
+    }
+
+    .primary {
+      background: var(--accent);
+      color: #fffaf6;
+    }
+
+    .primary:hover {
+      background: var(--accent-dark);
+    }
+
+    .secondary {
+      background: rgba(31, 27, 24, 0.08);
+      color: var(--ink);
+    }
+
+    .secondary:disabled,
+    .primary:disabled {
+      opacity: 0.42;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .danger {
+      background: #2a1714;
+      color: #fff4ef;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(47, 125, 75, 0.1);
+      color: var(--success);
+      font: 700 13px/1 var(--mono);
+      margin-bottom: 18px;
+    }
+
+    .status::before {
+      content: "";
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 0 6px rgba(47, 125, 75, 0.08);
+    }
+
+    .status.warn {
+      background: rgba(190, 74, 47, 0.1);
+      color: var(--accent);
+    }
+
+    .status.off {
+      background: rgba(31, 27, 24, 0.08);
+      color: var(--muted);
+    }
+
+    .workspace-card {
+      padding: 18px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.62);
+      margin-bottom: 16px;
+    }
+
+    .workspace-card strong {
+      display: block;
+      font: 700 16px/1.3 var(--mono);
+      margin-bottom: 8px;
+    }
+
+    .workspace-meta {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+      word-break: break-word;
+    }
+
+    .log,
+    .files {
+      border: 1px solid rgba(31, 27, 24, 0.14);
+      border-radius: 18px;
+      background: #1f1b18;
+      color: #f4efe7;
+      font: 14px/1.55 var(--mono);
+      min-height: 220px;
+      padding: 16px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .files {
+      background: #fdf8f2;
+      color: var(--ink);
+      border-color: rgba(31, 27, 24, 0.08);
+      white-space: normal;
+    }
+
+    .file-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(31, 27, 24, 0.08);
+      font: 14px/1.45 var(--mono);
+    }
+
+    .file-row:last-child {
+      border-bottom: 0;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .tiny {
+      font: 600 11px/1.2 var(--mono);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    @media (max-width: 980px) {
+      .hero,
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <div class="panel hero-copy">
+        <div class="eyebrow">MoonClaw Control Room</div>
+        <h1>Run the whole agent workspace lifecycle from one screen.</h1>
+        <p>
+          Spawn a workspace, execute commands, watch status, inspect files,
+          open the live viewer, download outputs, and destroy the workspace when you are done.
+        </p>
+      </div>
+      <aside class="panel hero-side">
+        <div class="metric">
+          <div class="metric-label">What this is</div>
+          <div class="metric-value">A browser frontend for the MoonClaw backend API you already built.</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Best demo flow</div>
+          <div class="metric-value">Enter API key, spawn a workspace, run a command, show file updates, open the viewer, then download and destroy.</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Docs</div>
+          <div class="metric-value"><a href="/docs" target="_blank" rel="noreferrer">Open API docs</a></div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="grid">
+      <div class="stack">
+        <div class="panel section">
+          <div id="apiStatus" class="status off">Waiting for API key</div>
+          <h2>Connect</h2>
+          <p class="note">Use the same deployed MoonClaw URL you are visiting now. Just paste the API key and pick an agent name.</p>
+          <div class="fields">
+            <label>
+              API Key
+              <input id="apiKey" type="password" placeholder="Paste your SWARM_API_KEY">
+            </label>
+            <label>
+              Agent ID
+              <input id="agentId" type="text" value="moonclaw-demo-agent" placeholder="moonclaw-demo-agent">
+            </label>
+            <label>
+              Auto Kill Timeout In Minutes
+              <input id="timeout" type="number" min="1" value="30">
+            </label>
+          </div>
+          <div class="actions">
+            <button id="saveKeyBtn" class="secondary">Save Key</button>
+            <button id="spawnBtn" class="primary">Spawn Workspace</button>
+          </div>
+        </div>
+
+        <div class="panel section">
+          <h2>Workspace</h2>
+          <p class="note">This updates as soon as a workspace is created. The same workspace ID is used for exec, files, download, and destroy.</p>
+          <div id="workspaceCard" class="workspace-card">
+            <strong>No workspace yet</strong>
+            <div class="workspace-meta">Spawn a workspace to start the flow.</div>
+          </div>
+          <div class="actions">
+            <button id="viewerBtn" class="secondary" disabled>Open Viewer</button>
+            <button id="downloadBtn" class="secondary" disabled>Download Zip</button>
+            <button id="destroyBtn" class="danger" disabled>Destroy Workspace</button>
+          </div>
+        </div>
+
+        <div class="panel section">
+          <h2>Command Runner</h2>
+          <p class="note">Enter a shell command exactly as you want it executed inside the workspace.</p>
+          <div class="fields">
+            <label>
+              Working Directory
+              <input id="cwd" type="text" value="/home/agent/workspace">
+            </label>
+            <label>
+              Command
+              <textarea id="commandBox">echo "hello from MoonClaw" > hello.txt && ls -la && cat hello.txt</textarea>
+            </label>
+          </div>
+          <div class="actions">
+            <button id="runBtn" class="primary" disabled>Run Command</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="stack">
+        <div class="panel section">
+          <div class="tiny muted">Execution Output</div>
+          <h2>Terminal</h2>
+          <p class="note">Every command response is appended here so you can show the run history during the demo.</p>
+          <div id="outputLog" class="log">No commands run yet.</div>
+        </div>
+
+        <div class="panel section">
+          <div class="tiny muted">Live Snapshot</div>
+          <h2>Files</h2>
+          <p class="note">This panel listens to the file sync websocket and refreshes automatically while the workspace is alive.</p>
+          <div id="filesPanel" class="files">
+            <div class="muted">No workspace connected.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const apiKeyInput = document.getElementById('apiKey');
+    const agentIdInput = document.getElementById('agentId');
+    const timeoutInput = document.getElementById('timeout');
+    const spawnBtn = document.getElementById('spawnBtn');
+    const saveKeyBtn = document.getElementById('saveKeyBtn');
+    const runBtn = document.getElementById('runBtn');
+    const destroyBtn = document.getElementById('destroyBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
+    const viewerBtn = document.getElementById('viewerBtn');
+    const commandBox = document.getElementById('commandBox');
+    const cwdInput = document.getElementById('cwd');
+    const workspaceCard = document.getElementById('workspaceCard');
+    const outputLog = document.getElementById('outputLog');
+    const filesPanel = document.getElementById('filesPanel');
+    const apiStatus = document.getElementById('apiStatus');
+
+    const state = {
+      apiKey: localStorage.getItem('moonclaw_api_key') || '',
+      workspaceId: null,
+      filesSocket: null,
+      streamSocket: null,
+      lastSpawn: null,
+    };
+
+    apiKeyInput.value = state.apiKey;
+    refreshStatus();
+
+    saveKeyBtn.addEventListener('click', () => {
+      state.apiKey = apiKeyInput.value.trim();
+      localStorage.setItem('moonclaw_api_key', state.apiKey);
+      refreshStatus();
+      appendLog('Saved API key locally in this browser session.', 'system');
+    });
+
+    spawnBtn.addEventListener('click', spawnWorkspace);
+    runBtn.addEventListener('click', runCommand);
+    destroyBtn.addEventListener('click', destroyWorkspace);
+    downloadBtn.addEventListener('click', downloadWorkspace);
+    viewerBtn.addEventListener('click', openViewer);
+
+    function refreshStatus(text, mode) {
+      const hasKey = (apiKeyInput.value || state.apiKey).trim().length > 0;
+      apiStatus.textContent = text || (hasKey ? 'Ready to talk to MoonClaw' : 'Waiting for API key');
+      apiStatus.className = 'status ' + (mode || (hasKey ? '' : 'off'));
+    }
+
+    function authHeaders() {
+      const apiKey = apiKeyInput.value.trim() || state.apiKey;
+      return {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      };
+    }
+
+    function appendLog(text, type = 'output') {
+      const prefix =
+        type === 'error' ? '[stderr]' :
+        type === 'system' ? '[system]' :
+        type === 'command' ? '[command]' :
+        '[stdout]';
+      if (outputLog.textContent === 'No commands run yet.') {
+        outputLog.textContent = '';
+      }
+      outputLog.textContent += `${prefix} ${text}\n`;
+      outputLog.scrollTop = outputLog.scrollHeight;
+    }
+
+    async function spawnWorkspace() {
+      const apiKey = apiKeyInput.value.trim();
+      if (!apiKey) {
+        refreshStatus('Paste the API key first.', 'warn');
+        return;
+      }
+
+      state.apiKey = apiKey;
+      localStorage.setItem('moonclaw_api_key', apiKey);
+      refreshStatus('Spawning workspace...', 'warn');
+      spawnBtn.disabled = true;
+
+      try {
+        const resp = await fetch('/v1/workspaces/spawn', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({
+            agent_id: agentIdInput.value.trim() || 'moonclaw-demo-agent',
+            auto_kill_timeout_minutes: Number(timeoutInput.value || 30),
+          }),
+        });
+
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.detail || 'Spawn failed');
+        }
+
+        state.workspaceId = data.workspace_id;
+        state.lastSpawn = data;
+        renderWorkspace(data);
+        connectSockets(data.workspace_id);
+
+        runBtn.disabled = false;
+        destroyBtn.disabled = false;
+        downloadBtn.disabled = false;
+        viewerBtn.disabled = false;
+
+        const readyText = data.status === 'running'
+          ? 'Workspace is ready.'
+          : `Workspace is booting. Estimated ready time: ${data.estimated_ready_sec}s`;
+        refreshStatus(readyText, data.status === 'running' ? '' : 'warn');
+        appendLog(`Spawned ${data.workspace_id} with status=${data.status}`, 'system');
+      } catch (error) {
+        refreshStatus(error.message || 'Spawn failed.', 'warn');
+        appendLog(String(error.message || error), 'error');
+      } finally {
+        spawnBtn.disabled = false;
+      }
+    }
+
+    function renderWorkspace(data) {
+      workspaceCard.innerHTML = `
+        <strong>${data.workspace_id}</strong>
+        <div class="workspace-meta">
+          Status: ${data.status}<br>
+          Estimated ready seconds: ${data.estimated_ready_sec}<br>
+          Exec: ${data.endpoints.exec}<br>
+          Viewer: ${window.location.origin}/v1/workspaces/${data.workspace_id}/view?token=${encodeURIComponent(state.apiKey)}
+        </div>
+      `;
+    }
+
+    async function runCommand() {
+      if (!state.workspaceId) {
+        refreshStatus('Spawn a workspace first.', 'warn');
+        return;
+      }
+
+      const rawCommand = commandBox.value.trim();
+      if (!rawCommand) {
+        refreshStatus('Enter a command first.', 'warn');
+        return;
+      }
+
+      runBtn.disabled = true;
+      appendLog(rawCommand, 'command');
+      refreshStatus('Running command...', 'warn');
+
+      try {
+        const resp = await fetch(`/v1/workspaces/${state.workspaceId}/exec`, {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({
+            command: rawCommand,
+            args: [],
+            working_directory: cwdInput.value.trim() || '/home/agent/workspace',
+            timeout_seconds: 60,
+          }),
+        });
+
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.detail || 'Exec failed');
+        }
+
+        if (data.stdout) appendLog(data.stdout.trimEnd(), 'output');
+        if (data.stderr) appendLog(data.stderr.trimEnd(), 'error');
+        appendLog(`exit_code=${data.exit_code} execution_time_ms=${data.execution_time_ms}`, 'system');
+        refreshStatus(`Last command exit code: ${data.exit_code}`, data.exit_code === 0 ? '' : 'warn');
+      } catch (error) {
+        refreshStatus(error.message || 'Exec failed.', 'warn');
+        appendLog(String(error.message || error), 'error');
+      } finally {
+        runBtn.disabled = false;
+      }
+    }
+
+    function connectSockets(workspaceId) {
+      closeSockets();
+
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = location.host;
+      const token = encodeURIComponent(state.apiKey);
+
+      state.filesSocket = new WebSocket(`${proto}//${host}/v1/workspaces/${workspaceId}/files?token=${token}`);
+      state.filesSocket.onmessage = event => {
+        const payload = JSON.parse(event.data);
+        renderFiles(payload.files || []);
+      };
+      state.filesSocket.onerror = () => {
+        appendLog('File sync websocket error.', 'error');
+      };
+
+      state.streamSocket = new WebSocket(`${proto}//${host}/v1/workspaces/${workspaceId}/stream?token=${token}`);
+      state.streamSocket.onmessage = event => {
+        const payload = JSON.parse(event.data);
+        if (payload.status) {
+          refreshStatus(`Workspace status: ${payload.status}`);
+        }
+        if (payload.type === 'redirect' && payload.stream_url) {
+          appendLog(`Live stream available at ${payload.stream_url}`, 'system');
+        }
+      };
+    }
+
+    function renderFiles(files) {
+      if (!files.length) {
+        filesPanel.innerHTML = '<div class="muted">No files yet.</div>';
+        return;
+      }
+      filesPanel.innerHTML = files.map(file => `
+        <div class="file-row">
+          <span>${file.path}</span>
+          <span class="muted">${formatBytes(file.size || 0)}</span>
+        </div>
+      `).join('');
+    }
+
+    async function downloadWorkspace() {
+      if (!state.workspaceId) return;
+      try {
+        const resp = await fetch(`/v1/workspaces/${state.workspaceId}/download`, {
+          headers: {
+            'Authorization': `Bearer ${state.apiKey}`,
+          },
+        });
+        if (!resp.ok) {
+          const text = await resp.text();
+          throw new Error(text || 'Download failed');
+        }
+        const blob = await resp.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${state.workspaceId}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        appendLog(`Downloaded ${state.workspaceId}.zip`, 'system');
+      } catch (error) {
+        appendLog(String(error.message || error), 'error');
+        refreshStatus('Download failed.', 'warn');
+      }
+    }
+
+    async function destroyWorkspace() {
+      if (!state.workspaceId) return;
+      destroyBtn.disabled = true;
+      try {
+        const resp = await fetch(`/v1/workspaces/${state.workspaceId}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${state.apiKey}`,
+          },
+        });
+        const data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data.detail || 'Destroy failed');
+        }
+        appendLog(`Destroyed ${state.workspaceId}`, 'system');
+        closeSockets();
+        state.workspaceId = null;
+        workspaceCard.innerHTML = `
+          <strong>No workspace yet</strong>
+          <div class="workspace-meta">Spawn a workspace to start the flow.</div>
+        `;
+        filesPanel.innerHTML = '<div class="muted">No workspace connected.</div>';
+        runBtn.disabled = true;
+        destroyBtn.disabled = true;
+        downloadBtn.disabled = true;
+        viewerBtn.disabled = true;
+        refreshStatus('Workspace destroyed.', 'off');
+      } catch (error) {
+        appendLog(String(error.message || error), 'error');
+        refreshStatus('Destroy failed.', 'warn');
+      } finally {
+        destroyBtn.disabled = false;
+      }
+    }
+
+    function openViewer() {
+      if (!state.workspaceId) return;
+      const url = `/v1/workspaces/${state.workspaceId}/view?token=${encodeURIComponent(state.apiKey)}`;
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+
+    function closeSockets() {
+      if (state.filesSocket) {
+        state.filesSocket.close();
+        state.filesSocket = null;
+      }
+      if (state.streamSocket) {
+        state.streamSocket.close();
+        state.streamSocket = null;
+      }
+    }
+
+    function formatBytes(bytes) {
+      if (bytes < 1024) return `${bytes} B`;
+      if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+      return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+  </script>
+</body>
+</html>
